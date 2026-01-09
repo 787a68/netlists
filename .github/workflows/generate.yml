@@ -40,29 +40,55 @@ jobs:
           sed -i 's/#.*$//' direct-list.txt
           sed -i '/^$/d' direct-list.txt
 
-      - name: Build suffix regex from direct-list
+      - name: Filter domains with suffix matching (optimized)
         shell: bash
         run: |
           set -euo pipefail
-          # 生成正则：匹配“完整域或其子域”为 direct-list 中的后缀
-          # 形如：(^|\.)example\.com$
-          cat > make_regex.awk <<'AWK'
-          BEGIN { }
+          cat > filter_domains.awk <<'AWK'
+          BEGIN {
+            suffix_count = 0
+            while ((getline line < "direct-list.txt") > 0) {
+              if (line != "") {
+                suffixes[line] = 1
+                suffix_count++
+              }
+            }
+            close("direct-list.txt")
+            printf "Loaded %d suffixes, filtering...\n", suffix_count > "/dev/stderr"
+            total = 0
+            filtered = 0
+            kept = 0
+          }
           {
-            g = $0
-            # 转义正则特殊字符
-            g = gensub(/([\\.\^$|()[\]{}+?])/,"\\\\\\\\\\\\1","g",g)
-            print "(^\|\\\.)" g "$"
+            domain = $0
+            total++
+            keep = 1
+            
+            if (domain in suffixes) {
+              keep = 0
+            } else {
+              temp = domain
+              while (match(temp, /\./)) {
+                temp = substr(temp, RSTART + 1)
+                if (temp in suffixes) {
+                  keep = 0
+                  break
+                }
+              }
+            }
+            
+            if (keep) {
+              kept++
+              print $0
+            } else {
+              filtered++
+            }
+          }
+          END {
+            printf "Total: %d | Kept: %d (%.1f%%) | Filtered: %d (%.1f%%)\n", total, kept, (kept/total)*100, filtered, (filtered/total)*100 > "/dev/stderr"
           }
           AWK
-          awk -f make_regex.awk direct-list.txt > direct-list.regex
-
-      - name: Filter domains with regex (optimized)
-        shell: bash
-        run: |
-          set -euo pipefail
-          # 使用 grep -E 排除匹配后缀的域名
-          grep -Ev -f direct-list.regex top-1m.domain > 1m.domain
+          awk -f filter_domains.awk top-1m.domain > 1m.domain
 
       - name: Download gfw ip list and add reserved ranges
         shell: bash
