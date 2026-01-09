@@ -1,0 +1,70 @@
+name: Generate Domain and IP List
+
+on:
+  workflow_dispatch:   # 手动触发
+  schedule:
+    - cron: "0 3 * * 1"   # 每周一凌晨3点自动运行
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y unzip curl
+
+    - name: Download Tranco top-1m list
+      run: |
+        curl -L https://tranco-list.eu/top-1m.csv.zip -o top-1m.csv.zip
+        unzip -o top-1m.csv.zip
+        # 去掉第一列，只保留域名列
+        cut -d',' -f2 top-1m.csv > top-1m.domain
+
+    - name: Download direct-list
+      run: |
+        curl -L https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/direct-list.txt -o direct-list.txt
+
+    - name: Filter domains (optimized)
+      run: |
+        # 使用 grep 一次性过滤掉 direct-list 中的域名后缀
+        grep -v -F -f direct-list.txt top-1m.domain > 1m.domain
+
+    - name: Download gfw ip list and add reserved ranges
+      run: |
+        curl -L https://raw.githubusercontent.com/pmkol/easymosdns/rules/gfw_ip_list.txt -o gfw_ipcidr.txt
+        cp gfw_ipcidr.txt gfw.ipcidr
+        cat >> gfw.ipcidr <<EOF
+0.0.0.0/8
+10.0.0.0/8
+100.64.0.0/10
+127.0.0.0/8
+169.254.0.0/16
+172.16.0.0/12
+192.0.0.0/24
+192.0.2.0/24
+192.88.99.0/24
+192.168.0.0/16
+198.18.0.0/15
+198.51.100.0/24
+203.0.113.0/24
+224.0.0.0/4
+240.0.0.0/4
+EOF
+
+    - name: Commit and push results to branch
+      run: |
+        git config --global user.name "github-actions[bot]"
+        git config --global user.email "github-actions[bot]@users.noreply.github.com"
+        if git ls-remote --exit-code --heads origin generated-files; then
+          git checkout generated-files
+        else
+          git checkout -b generated-files
+        fi
+        git add 1m.domain gfw.ipcidr
+        git commit -m "Weekly update of domain and ipcidr files" || echo "No changes to commit"
+        git push origin generated-files
