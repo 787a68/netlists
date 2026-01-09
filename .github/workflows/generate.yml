@@ -51,8 +51,8 @@ jobs:
           {
             g = $0
             # 转义正则特殊字符
-            g = gensub(/([\\.^$|()\\[\\]{}+?])/,"\\\\\\1","g",g)
-            print "(^|\\.)" g "$"
+            g = gensub(/([\\.\^$|()[\]{}+?])/,"\\\\\\\\\\\\1","g",g)
+            print "(^\|\\\.)" g "$"
           }
           AWK
           awk -f make_regex.awk direct-list.txt > direct-list.regex
