@@ -26,35 +26,42 @@ jobs:
           set -euo pipefail
           curl -L https://tranco-list.eu/top-1m.csv.zip -o top-1m.csv.zip
           unzip -o top-1m.csv.zip
-          # 去掉第一列，只保留域名列
+          # 只保留域名列
           cut -d',' -f2 top-1m.csv > top-1m.domain
 
-      - name: Download direct-list
+      - name: Download direct-list and normalize
         shell: bash
         run: |
           set -euo pipefail
           curl -L https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/direct-list.txt -o direct-list.txt
-          # 规范化：去空行与前后空白
+          # 去除注释、空行与前后空白
           sed -i 's/^[[:space:]]\+//;s/[[:space:]]\+$//' direct-list.txt
           sed -i '/^$/d' direct-list.txt
+          sed -i 's/#.*$//' direct-list.txt
+          sed -i '/^$/d' direct-list.txt
 
-      - name: Filter domains (suffix match, optimized)
+      - name: Build suffix regex from direct-list
         shell: bash
         run: |
           set -euo pipefail
-          # 将 direct-list 转为正则，匹配“完整域或子域后缀”
-          # 规则：(^|\\.)pattern$
-          awk '
-            BEGIN { OFS="\n" }
-            {
-              g=$0
-              # 转义正则特殊字符
-              g = gensub(/([\\.^$|()\\[\\]{}+?])/,"\\\\\\1","g",g)
-              print "(^|\\.)" g "$"
-            }
-          ' direct-list.txt > direct-list.regex
+          # 生成正则：匹配“完整域或其子域”为 direct-list 中的后缀
+          # 形如：(^|\.)example\.com$
+          cat > make_regex.awk <<'AWK'
+          BEGIN { }
+          {
+            g = $0
+            # 转义正则特殊字符
+            g = gensub(/([\\.^$|()\\[\\]{}+?])/,"\\\\\\1","g",g)
+            print "(^|\\.)" g "$"
+          }
+          AWK
+          awk -f make_regex.awk direct-list.txt > direct-list.regex
 
-          # 用 grep -E 一次性过滤匹配后缀的域名
+      - name: Filter domains with regex (optimized)
+        shell: bash
+        run: |
+          set -euo pipefail
+          # 使用 grep -E 排除匹配后缀的域名
           grep -Ev -f direct-list.regex top-1m.domain > 1m.domain
 
       - name: Download gfw ip list and add reserved ranges
@@ -64,22 +71,22 @@ jobs:
           curl -L https://raw.githubusercontent.com/pmkol/easymosdns/rules/gfw_ip_list.txt -o gfw_ipcidr.txt
           cp gfw_ipcidr.txt gfw.ipcidr
           cat >> gfw.ipcidr <<'EOF'
-0.0.0.0/8
-10.0.0.0/8
-100.64.0.0/10
-127.0.0.0/8
-169.254.0.0/16
-172.16.0.0/12
-192.0.0.0/24
-192.0.2.0/24
-192.88.99.0/24
-192.168.0.0/16
-198.18.0.0/15
-198.51.100.0/24
-203.0.113.0/24
-224.0.0.0/4
-240.0.0.0/4
-EOF
+          0.0.0.0/8
+          10.0.0.0/8
+          100.64.0.0/10
+          127.0.0.0/8
+          169.254.0.0/16
+          172.16.0.0/12
+          192.0.0.0/24
+          192.0.2.0/24
+          192.88.99.0/24
+          192.168.0.0/16
+          198.18.0.0/15
+          198.51.100.0/24
+          203.0.113.0/24
+          224.0.0.0/4
+          240.0.0.0/4
+          EOF
 
       - name: Commit and push results to branch
         shell: bash
