@@ -34,6 +34,10 @@ jobs:
         run: |
           set -euo pipefail
           curl -L https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/direct-list.txt -o direct-list.txt
+          # 去除开头的full:
+          sed -i 's/^full://' direct-list.txt
+          # 去除regexp:开头的行
+          sed -i '/^regexp:/d' direct-list.txt
           # 去除注释、空行与前后空白
           sed -i 's/^[[:space:]]\+//;s/[[:space:]]\+$//' direct-list.txt
           sed -i '/^$/d' direct-list.txt
