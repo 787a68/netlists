@@ -56,47 +56,51 @@ jobs:
           set -euo pipefail
           cat > filter_domains.awk <<'AWK'
           BEGIN {
-            # 读取 top-1m 域名到数组
-            while ((getline line < "top-1m.domain") > 0) {
+            while ((getline line < "direct-list.txt") > 0) {
               if (line != "") {
                 gsub(/^[[:space:]]+|[[:space:]]+$/, "", line)
-                if (line != "") domains[line] = 1
+                if (line != "") suffixes[line] = 1
               }
             }
-            close("top-1m.domain")
+            close("direct-list.txt")
           }
           {
-            # 处理 direct-list 中的每个规则
-            suffix = $0
-            gsub(/^[[:space:]]+|[[:space:]]+$/, "", suffix)
-            if (suffix == "") next
-            
-            matched = 0
-            # 检查是否有域名匹配这个规则
-            for (domain in domains) {
-              if (domain == suffix) {
-                matched = 1
-                delete domains[domain]
-              } else if (match(domain, "\\." suffix "$")) {
-                matched = 1
-                delete domains[domain]
+            domain = $0
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", domain)
+            if (domain == "") next
+
+            keep = 1
+            matched_suffix = ""
+
+            if (domain in suffixes) {
+              keep = 0
+              matched_suffix = domain
+            } else {
+              temp = domain
+              while (match(temp, /\./)) {
+                temp = substr(temp, RSTART + 1)
+                if (temp in suffixes) {
+                  keep = 0
+                  matched_suffix = temp
+                  break
+                }
               }
             }
-            
-            # 如果匹配到了，记录这个 direct-list 规则
-            if (matched) {
-              print suffix > "direct.domain.tmp"
+
+            if (keep) {
+              print domain > "1m.domain.tmp"
+            } else if (matched_suffix != "") {
+              matched_rules[matched_suffix] = 1
             }
           }
           END {
-            # 剩余未匹配的域名输出到 1m.domain
-            for (domain in domains) {
-              print domain > "1m.domain.tmp"
+            for (rule in matched_rules) {
+              print rule > "direct.domain.tmp"
             }
           }
           AWK
-          
-          awk -f filter_domains.awk direct-list.txt
+
+          awk -f filter_domains.awk top-1m.domain
           sort -u 1m.domain.tmp -o 1m.domain
           sort -u direct.domain.tmp -o direct.domain
           rm -f 1m.domain.tmp direct.domain.tmp filter_domains.awk
