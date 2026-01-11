@@ -5,6 +5,9 @@ on:
   schedule:
     - cron: "0 3 * * 1"  # 每周一凌晨3点
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -28,54 +31,105 @@ jobs:
           unzip -o top-1m.csv.zip
           # 只保留域名列
           cut -d',' -f2 top-1m.csv > top-1m.domain
+          echo "📊 top-1m.domain: $(wc -l < top-1m.domain) lines, $(stat -f%z top-1m.domain 2>/dev/null || stat -c%s top-1m.domain) bytes"
 
       - name: Download direct-list and normalize
         shell: bash
         run: |
           set -euo pipefail
           curl -L https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/direct-list.txt -o direct-list.txt
-          # 去除开头的full:
-          sed -i 's/^full://' direct-list.txt
+          echo "📥 Downloaded direct-list.txt: $(wc -l < direct-list.txt) lines"
+          
           # 去除regexp:开头的行
           sed -i '/^regexp:/d' direct-list.txt
+          echo "🔧 After removing regexp lines: $(wc -l < direct-list.txt) lines"
+          
+          # 去除开头的full:
+          sed -i 's/^full://g' direct-list.txt
+          echo "🔧 After removing full: prefix: $(wc -l < direct-list.txt) lines"
+          
           # 去除注释、空行与前后空白
           sed -i 's/^[[:space:]]\+//;s/[[:space:]]\+$//' direct-list.txt
           sed -i '/^$/d' direct-list.txt
           sed -i 's/#.*$//' direct-list.txt
           sed -i '/^$/d' direct-list.txt
+          echo "🔧 After cleaning: $(wc -l < direct-list.txt) lines"
+          
+          # 去重并排序
+          sort -u direct-list.txt -o direct-list.txt
+          echo "✅ Final direct-list.txt: $(wc -l < direct-list.txt) lines, $(stat -f%z direct-list.txt 2>/dev/null || stat -c%s direct-list.txt) bytes"
+          
+          # 调试：显示前10行
+          echo "🔍 First 10 lines of direct-list.txt:"
+          head -10 direct-list.txt | cat -A
+          
+          # 调试：检查是否有baidu.com
+          if grep -q "^baidu.com$" direct-list.txt; then
+            echo "✓ Found baidu.com in direct-list.txt"
+          else
+            echo "✗ baidu.com NOT found in direct-list.txt"
+          fi
 
       - name: Filter domains with suffix matching (optimized)
         shell: bash
         run: |
           set -euo pipefail
+          
+          # 调试：显示top-1m.domain的前10行
+          echo "🔍 First 10 lines of top-1m.domain:"
+          head -10 top-1m.domain | cat -A
+          
           cat > filter_domains.awk <<'AWK'
           BEGIN {
             suffix_count = 0
+            debug_count = 0
             while ((getline line < "direct-list.txt") > 0) {
               if (line != "") {
-                suffixes[line] = 1
-                suffix_count++
+                # 确保去除所有空白字符
+                gsub(/^[[:space:]]+|[[:space:]]+$/, "", line)
+                if (line != "") {
+                  suffixes[line] = 1
+                  suffix_count++
+                  # 调试：输出前5个后缀
+                  if (debug_count < 5) {
+                    printf "  Debug suffix[%d]: [%s]\n", debug_count, line > "/dev/stderr"
+                    debug_count++
+                  }
+                }
               }
             }
             close("direct-list.txt")
-            printf "Loaded %d suffixes, filtering...\n", suffix_count > "/dev/stderr"
+            printf "🔍 Loaded %d suffixes for filtering\n", suffix_count > "/dev/stderr"
             total = 0
             filtered = 0
             kept = 0
+            match_examples = 0
           }
           {
             domain = $0
+            # 确保去除所有空白字符
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", domain)
+            if (domain == "") next
+            
             total++
             keep = 1
             
             if (domain in suffixes) {
               keep = 0
+              if (match_examples < 3) {
+                printf "  Match example: [%s] exact match\n", domain > "/dev/stderr"
+                match_examples++
+              }
             } else {
               temp = domain
               while (match(temp, /\./)) {
                 temp = substr(temp, RSTART + 1)
                 if (temp in suffixes) {
                   keep = 0
+                  if (match_examples < 3) {
+                    printf "  Match example: [%s] matched by suffix [%s]\n", domain, temp > "/dev/stderr"
+                    match_examples++
+                  }
                   break
                 }
               }
@@ -83,22 +137,29 @@ jobs:
             
             if (keep) {
               kept++
-              print $0
+              print domain
             } else {
               filtered++
             }
           }
           END {
-            printf "Total: %d | Kept: %d (%.1f%%) | Filtered: %d (%.1f%%)\n", total, kept, (kept/total)*100, filtered, (filtered/total)*100 > "/dev/stderr"
+            printf "📊 Total: %d | Kept: %d (%.1f%%) | Filtered: %d (%.1f%%)\n", total, kept, (kept/total)*100, filtered, (filtered/total)*100 > "/dev/stderr"
           }
           AWK
-          awk -f filter_domains.awk top-1m.domain > 1m.domain
+          awk -f filter_domains.awk top-1m.domain > 1m.domain.tmp
+          
+          # 去重
+          sort -u 1m.domain.tmp -o 1m.domain
+          rm 1m.domain.tmp
+          echo "✅ Final 1m.domain: $(wc -l < 1m.domain) lines, $(stat -f%z 1m.domain 2>/dev/null || stat -c%s 1m.domain) bytes"
 
       - name: Download gfw ip list and add reserved ranges
         shell: bash
         run: |
           set -euo pipefail
           curl -L https://raw.githubusercontent.com/pmkol/easymosdns/rules/gfw_ip_list.txt -o gfw_ipcidr.txt
+          echo "📥 Downloaded gfw_ipcidr.txt: $(wc -l < gfw_ipcidr.txt) lines"
+          
           cp gfw_ipcidr.txt gfw.ipcidr
           cat >> gfw.ipcidr <<'EOF'
           0.0.0.0/8
@@ -117,6 +178,7 @@ jobs:
           224.0.0.0/4
           240.0.0.0/4
           EOF
+          echo "✅ Final gfw.ipcidr: $(wc -l < gfw.ipcidr) lines, $(stat -f%z gfw.ipcidr 2>/dev/null || stat -c%s gfw.ipcidr) bytes"
 
       - name: Commit and push results to branch
         shell: bash
