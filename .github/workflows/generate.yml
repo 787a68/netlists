@@ -134,12 +134,9 @@ jobs:
             git rm -rf . 2>/dev/null || true
           fi
 
-          # 复制文件到 release 分支
-          cp 1m.domain gfw.ipcidr .
-          
           # 提交并推送
           git add 1m.domain gfw.ipcidr
-          
+
           if ! git diff --staged --quiet; then
             git commit -m "Update: $(wc -l < 1m.domain) domains, $(wc -l < gfw.ipcidr) IP ranges"
             git push -f origin release
