@@ -21,7 +21,7 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y unzip curl
+          sudo apt-get install -y unzip curl dos2unix
 
       - name: Download Tranco top-1m list
         shell: bash
@@ -31,6 +31,8 @@ jobs:
           unzip -o top-1m.csv.zip
           # 只保留域名列
           cut -d',' -f2 top-1m.csv > top-1m.domain
+          # 转换为Unix换行符
+          dos2unix top-1m.domain
           echo "📊 top-1m.domain: $(wc -l < top-1m.domain) lines, $(stat -f%z top-1m.domain 2>/dev/null || stat -c%s top-1m.domain) bytes"
 
       - name: Download direct-list and normalize
@@ -58,43 +60,21 @@ jobs:
           # 去重并排序
           sort -u direct-list.txt -o direct-list.txt
           echo "✅ Final direct-list.txt: $(wc -l < direct-list.txt) lines, $(stat -f%z direct-list.txt 2>/dev/null || stat -c%s direct-list.txt) bytes"
-          
-          # 调试：显示前10行
-          echo "🔍 First 10 lines of direct-list.txt:"
-          head -10 direct-list.txt | cat -A
-          
-          # 调试：检查是否有baidu.com
-          if grep -q "^baidu.com$" direct-list.txt; then
-            echo "✓ Found baidu.com in direct-list.txt"
-          else
-            echo "✗ baidu.com NOT found in direct-list.txt"
-          fi
 
       - name: Filter domains with suffix matching (optimized)
         shell: bash
         run: |
           set -euo pipefail
           
-          # 调试：显示top-1m.domain的前10行
-          echo "🔍 First 10 lines of top-1m.domain:"
-          head -10 top-1m.domain | cat -A
-          
           cat > filter_domains.awk <<'AWK'
           BEGIN {
             suffix_count = 0
-            debug_count = 0
             while ((getline line < "direct-list.txt") > 0) {
               if (line != "") {
-                # 确保去除所有空白字符
                 gsub(/^[[:space:]]+|[[:space:]]+$/, "", line)
                 if (line != "") {
                   suffixes[line] = 1
                   suffix_count++
-                  # 调试：输出前5个后缀
-                  if (debug_count < 5) {
-                    printf "  Debug suffix[%d]: [%s]\n", debug_count, line > "/dev/stderr"
-                    debug_count++
-                  }
                 }
               }
             }
@@ -103,11 +83,9 @@ jobs:
             total = 0
             filtered = 0
             kept = 0
-            match_examples = 0
           }
           {
             domain = $0
-            # 确保去除所有空白字符
             gsub(/^[[:space:]]+|[[:space:]]+$/, "", domain)
             if (domain == "") next
             
@@ -116,20 +94,12 @@ jobs:
             
             if (domain in suffixes) {
               keep = 0
-              if (match_examples < 3) {
-                printf "  Match example: [%s] exact match\n", domain > "/dev/stderr"
-                match_examples++
-              }
             } else {
               temp = domain
               while (match(temp, /\./)) {
                 temp = substr(temp, RSTART + 1)
                 if (temp in suffixes) {
                   keep = 0
-                  if (match_examples < 3) {
-                    printf "  Match example: [%s] matched by suffix [%s]\n", domain, temp > "/dev/stderr"
-                    match_examples++
-                  }
                   break
                 }
               }
