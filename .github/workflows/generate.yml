@@ -33,6 +33,7 @@ jobs:
           unzip -oq top-1m.csv.zip
           cut -d',' -f2 top-1m.csv > top-1m.domain
           dos2unix -q top-1m.domain 2>/dev/null || true
+          echo "📄 top-1m.domain: $(wc -l < top-1m.domain) lines, $(du -h top-1m.domain | cut -f1)"
 
       - name: Download and normalize direct-list
         shell: bash
@@ -47,6 +48,7 @@ jobs:
             -e '/^$/d' \
             direct-list.txt
           sort -u direct-list.txt -o direct-list.txt
+          echo "📄 direct-list.txt: $(wc -l < direct-list.txt) lines, $(du -h direct-list.txt | cut -f1)"
 
       - name: Filter domains with suffix matching
         shell: bash
@@ -87,30 +89,33 @@ jobs:
           awk -f filter_domains.awk top-1m.domain > 1m.domain.tmp
           sort -u 1m.domain.tmp -o 1m.domain
           rm -f 1m.domain.tmp filter_domains.awk
+          echo "📄 1m.domain: $(wc -l < 1m.domain) lines, $(du -h 1m.domain | cut -f1)"
 
       - name: Generate GFW IP CIDR list
         shell: bash
         run: |
           set -euo pipefail
           curl -fsSL https://raw.githubusercontent.com/pmkol/easymosdns/rules/gfw_ip_list.txt -o gfw_ipcidr.txt
+          echo "📄 gfw_ipcidr.txt: $(wc -l < gfw_ipcidr.txt) lines, $(du -h gfw_ipcidr.txt | cut -f1)"
           cp gfw_ipcidr.txt gfw.ipcidr
           cat >> gfw.ipcidr <<'EOF'
-0.0.0.0/8
-10.0.0.0/8
-100.64.0.0/10
-127.0.0.0/8
-169.254.0.0/16
-172.16.0.0/12
-192.0.0.0/24
-192.0.2.0/24
-192.88.99.0/24
-192.168.0.0/16
-198.18.0.0/15
-198.51.100.0/24
-203.0.113.0/24
-224.0.0.0/4
-240.0.0.0/4
-EOF
+          0.0.0.0/8
+          10.0.0.0/8
+          100.64.0.0/10
+          127.0.0.0/8
+          169.254.0.0/16
+          172.16.0.0/12
+          192.0.0.0/24
+          192.0.2.0/24
+          192.88.99.0/24
+          192.168.0.0/16
+          198.18.0.0/15
+          198.51.100.0/24
+          203.0.113.0/24
+          224.0.0.0/4
+          240.0.0.0/4
+          EOF
+          echo "📄 gfw.ipcidr: $(wc -l < gfw.ipcidr) lines, $(du -h gfw.ipcidr | cut -f1)"
 
       - name: Commit and push to release branch
         shell: bash
@@ -138,4 +143,7 @@ EOF
           if ! git diff --staged --quiet; then
             git commit -m "Update: $(wc -l < 1m.domain) domains, $(wc -l < gfw.ipcidr) IP ranges"
             git push -f origin release
+            echo "✅ 已推送到 release 分支"
+            echo "📄 1m.domain: $(wc -l < 1m.domain) lines, $(du -h 1m.domain | cut -f1)"
+            echo "📄 gfw.ipcidr: $(wc -l < gfw.ipcidr) lines, $(du -h gfw.ipcidr | cut -f1)"
           fi
