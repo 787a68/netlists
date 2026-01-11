@@ -50,46 +50,58 @@ jobs:
           sort -u direct-list.txt -o direct-list.txt
           echo "📄 direct-list.txt: $(wc -l < direct-list.txt) lines, $(du -h direct-list.txt | cut -f1)"
 
-      - name: Filter domains with suffix matching
+      - name: Filter domains and find matched direct-list entries
         shell: bash
         run: |
           set -euo pipefail
           cat > filter_domains.awk <<'AWK'
           BEGIN {
-            while ((getline line < "direct-list.txt") > 0) {
+            # 读取 top-1m 域名到数组
+            while ((getline line < "top-1m.domain") > 0) {
               if (line != "") {
                 gsub(/^[[:space:]]+|[[:space:]]+$/, "", line)
-                if (line != "") suffixes[line] = 1
+                if (line != "") domains[line] = 1
               }
             }
-            close("direct-list.txt")
+            close("top-1m.domain")
           }
           {
-            domain = $0
-            gsub(/^[[:space:]]+|[[:space:]]+$/, "", domain)
-            if (domain == "") next
+            # 处理 direct-list 中的每个规则
+            suffix = $0
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", suffix)
+            if (suffix == "") next
             
-            keep = 1
-            if (domain in suffixes) {
-              keep = 0
-            } else {
-              temp = domain
-              while (match(temp, /\./)) {
-                temp = substr(temp, RSTART + 1)
-                if (temp in suffixes) {
-                  keep = 0
-                  break
-                }
+            matched = 0
+            # 检查是否有域名匹配这个规则
+            for (domain in domains) {
+              if (domain == suffix) {
+                matched = 1
+                delete domains[domain]
+              } else if (match(domain, "\\." suffix "$")) {
+                matched = 1
+                delete domains[domain]
               }
             }
-            if (keep) print domain
+            
+            # 如果匹配到了，记录这个 direct-list 规则
+            if (matched) {
+              print suffix > "direct.domain.tmp"
+            }
+          }
+          END {
+            # 剩余未匹配的域名输出到 1m.domain
+            for (domain in domains) {
+              print domain > "1m.domain.tmp"
+            }
           }
           AWK
           
-          awk -f filter_domains.awk top-1m.domain > 1m.domain.tmp
+          awk -f filter_domains.awk direct-list.txt
           sort -u 1m.domain.tmp -o 1m.domain
-          rm -f 1m.domain.tmp filter_domains.awk
+          sort -u direct.domain.tmp -o direct.domain
+          rm -f 1m.domain.tmp direct.domain.tmp filter_domains.awk
           echo "📄 1m.domain: $(wc -l < 1m.domain) lines, $(du -h 1m.domain | cut -f1)"
+          echo "📄 direct.domain: $(wc -l < direct.domain) lines, $(du -h direct.domain | cut -f1)"
 
       - name: Generate GFW IP CIDR list
         shell: bash
@@ -135,12 +147,13 @@ jobs:
           fi
 
           # 提交并推送
-          git add 1m.domain gfw.ipcidr
+          git add 1m.domain direct.domain gfw.ipcidr
 
           if ! git diff --staged --quiet; then
-            git commit -m "Update: $(wc -l < 1m.domain) domains, $(wc -l < gfw.ipcidr) IP ranges"
+            git commit -m "Update: $(wc -l < 1m.domain) domains, $(wc -l < direct.domain) direct rules, $(wc -l < gfw.ipcidr) IP ranges"
             git push -f origin release
             echo "✅ 已推送到 release 分支"
             echo "📄 1m.domain: $(wc -l < 1m.domain) lines, $(du -h 1m.domain | cut -f1)"
+            echo "📄 direct.domain: $(wc -l < direct.domain) lines, $(du -h direct.domain | cut -f1)"
             echo "📄 gfw.ipcidr: $(wc -l < gfw.ipcidr) lines, $(du -h gfw.ipcidr | cut -f1)"
           fi
