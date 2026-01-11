@@ -121,8 +121,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git config --global user.name "actions-user"
+          git config --global user.email "actions@github.com"
 
           # 切换到 release 分支
           if git ls-remote --exit-code --heads origin release >/dev/null 2>&1; then
