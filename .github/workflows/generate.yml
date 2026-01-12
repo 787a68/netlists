@@ -69,6 +69,36 @@ jobs:
           rm -f top-1m.domain.dedup deduplicate.awk
           echo "📄 top-1m.domain (去重后): $(wc -l < top-1m.domain) lines, $(du -h top-1m.domain | cut -f1)"
 
+      - name: Download and normalize reject-list
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/reject-list.txt -o reject-list.txt
+          sed -i \
+            -e '/^regexp:/d' \
+            -e 's/^full://g' \
+            -e 's/^[[:space:]]\+//;s/[[:space:]]\+$//' \
+            -e 's/#.*$//' \
+            -e '/^$/d' \
+            reject-list.txt
+          sort -u reject-list.txt -o reject-list.txt
+          echo "📄 reject-list.txt: $(wc -l < reject-list.txt) lines, $(du -h reject-list.txt | cut -f1)"
+
+      - name: Download and normalize gfw-list
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/gfw.txt -o gfw-list.txt
+          sed -i \
+            -e '/^regexp:/d' \
+            -e 's/^full://g' \
+            -e 's/^[[:space:]]\+//;s/[[:space:]]\+$//' \
+            -e 's/#.*$//' \
+            -e '/^$/d' \
+            gfw-list.txt
+          sort -u gfw-list.txt -o gfw-list.txt
+          echo "📄 gfw-list.txt: $(wc -l < gfw-list.txt) lines, $(du -h gfw-list.txt | cut -f1)"
+
       - name: Download and normalize direct-list
         shell: bash
         run: |
@@ -84,12 +114,172 @@ jobs:
           sort -u direct-list.txt -o direct-list.txt
           echo "📄 direct-list.txt: $(wc -l < direct-list.txt) lines, $(du -h direct-list.txt | cut -f1)"
 
-      - name: Filter domains and find matched direct-list entries
+      - name: Process reject domains with 1m pipeline
         shell: bash
         run: |
           set -euo pipefail
-          cat > filter_domains.awk <<'AWK'
+          cat > process_reject.awk <<'AWK'
           BEGIN {
+            while ((getline line < "reject-list.txt") > 0) {
+              if (line != "") {
+                gsub(/^[[:space:]]+|[[:space:]]+$/, "", line)
+                if (line != "") suffixes[line] = 1
+              }
+            }
+            close("reject-list.txt")
+          }
+          {
+            domain = $0
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", domain)
+            if (domain == "") next
+            
+            keep = 1
+            matched_suffix = ""
+            
+            if (domain in suffixes) {
+              keep = 0
+              matched_suffix = domain
+            } else {
+              temp = domain
+              while (match(temp, /\./)) {
+                temp = substr(temp, RSTART + 1)
+                if (temp in suffixes) {
+                  keep = 0
+                  matched_suffix = temp
+                  break
+                }
+              }
+            }
+            
+            if (!keep && matched_suffix != "") {
+              matched_rules[matched_suffix] = 1
+            } else if (keep) {
+              print domain > "top-1m-after-reject.tmp"
+            }
+          }
+          END {
+            for (rule in matched_rules) {
+              print rule > "reject.domain.tmp"
+            }
+          }
+          AWK
+          
+          awk -f process_reject.awk top-1m.domain
+          sort -u reject.domain.tmp -o reject.domain 2>/dev/null || touch reject.domain
+          sort -u top-1m-after-reject.tmp -o top-1m-after-reject.domain 2>/dev/null || cp top-1m.domain top-1m-after-reject.domain
+          rm -f reject.domain.tmp top-1m-after-reject.tmp process_reject.awk
+          echo "📄 reject.domain: $(wc -l < reject.domain) lines, $(du -h reject.domain | cut -f1)"
+          echo "📄 top-1m-after-reject.domain: $(wc -l < top-1m-after-reject.domain) lines"
+
+      - name: Process gfw/proxy domains with 1m pipeline and deduplicate with reject
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > process_gfw.awk <<'AWK'
+          BEGIN {
+            # 加载 reject 规则用于去重
+            while ((getline line < "reject.domain") > 0) {
+              if (line != "") {
+                gsub(/^[[:space:]]+|[[:space:]]+$/, "", line)
+                if (line != "") reject_rules[line] = 1
+              }
+            }
+            close("reject.domain")
+            
+            # 加载 gfw 规则
+            while ((getline line < "gfw-list.txt") > 0) {
+              if (line != "") {
+                gsub(/^[[:space:]]+|[[:space:]]+$/, "", line)
+                if (line != "") suffixes[line] = 1
+              }
+            }
+            close("gfw-list.txt")
+          }
+          {
+            domain = $0
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", domain)
+            if (domain == "") next
+            
+            keep = 1
+            matched_suffix = ""
+            
+            if (domain in suffixes) {
+              keep = 0
+              matched_suffix = domain
+            } else {
+              temp = domain
+              while (match(temp, /\./)) {
+                temp = substr(temp, RSTART + 1)
+                if (temp in suffixes) {
+                  keep = 0
+                  matched_suffix = temp
+                  break
+                }
+              }
+            }
+            
+            if (!keep && matched_suffix != "") {
+              # 检查是否已在 reject 中
+              is_in_reject = 0
+              if (matched_suffix in reject_rules) {
+                is_in_reject = 1
+              } else {
+                temp = matched_suffix
+                while (match(temp, /\./)) {
+                  temp = substr(temp, RSTART + 1)
+                  if (temp in reject_rules) {
+                    is_in_reject = 1
+                    break
+                  }
+                }
+              }
+              
+              if (!is_in_reject) {
+                matched_rules[matched_suffix] = 1
+              }
+            } else if (keep) {
+              print domain > "top-1m-after-gfw.tmp"
+            }
+          }
+          END {
+            for (rule in matched_rules) {
+              print rule > "proxy.domain.tmp"
+            }
+          }
+          AWK
+          
+          awk -f process_gfw.awk top-1m-after-reject.domain
+          sort -u proxy.domain.tmp -o proxy.domain 2>/dev/null || touch proxy.domain
+          sort -u top-1m-after-gfw.tmp -o top-1m-after-gfw.domain 2>/dev/null || cp top-1m-after-reject.domain top-1m-after-gfw.domain
+          rm -f proxy.domain.tmp top-1m-after-gfw.tmp process_gfw.awk
+          echo "📄 proxy.domain: $(wc -l < proxy.domain) lines, $(du -h proxy.domain | cut -f1)"
+          echo "📄 top-1m-after-gfw.domain: $(wc -l < top-1m-after-gfw.domain) lines"
+
+      - name: Process direct domains with 1m pipeline and deduplicate with reject+gfw
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > process_direct.awk <<'AWK'
+          BEGIN {
+            # 加载 reject 规则用于去重
+            while ((getline line < "reject.domain") > 0) {
+              if (line != "") {
+                gsub(/^[[:space:]]+|[[:space:]]+$/, "", line)
+                if (line != "") existing_rules[line] = 1
+              }
+            }
+            close("reject.domain")
+            
+            # 加载 proxy 规则用于去重
+            while ((getline line < "proxy.domain") > 0) {
+              if (line != "") {
+                gsub(/^[[:space:]]+|[[:space:]]+$/, "", line)
+                if (line != "") existing_rules[line] = 1
+              }
+            }
+            close("proxy.domain")
+            
+            # 加载 direct 规则
             while ((getline line < "direct-list.txt") > 0) {
               if (line != "") {
                 gsub(/^[[:space:]]+|[[:space:]]+$/, "", line)
@@ -121,10 +311,27 @@ jobs:
               }
             }
             
-            if (keep) {
-              print domain > "1m.domain.tmp"
-            } else if (matched_suffix != "") {
-              matched_rules[matched_suffix] = 1
+            if (!keep && matched_suffix != "") {
+              # 检查是否已在 reject 或 proxy 中
+              is_in_existing = 0
+              if (matched_suffix in existing_rules) {
+                is_in_existing = 1
+              } else {
+                temp = matched_suffix
+                while (match(temp, /\./)) {
+                  temp = substr(temp, RSTART + 1)
+                  if (temp in existing_rules) {
+                    is_in_existing = 1
+                    break
+                  }
+                }
+              }
+              
+              if (!is_in_existing) {
+                matched_rules[matched_suffix] = 1
+              }
+            } else if (keep) {
+              print domain > "1m-other.list.tmp"
             }
           }
           END {
@@ -134,12 +341,12 @@ jobs:
           }
           AWK
           
-          awk -f filter_domains.awk top-1m.domain
-          sort -u 1m.domain.tmp -o 1m.domain
-          sort -u direct.domain.tmp -o direct.domain
-          rm -f 1m.domain.tmp direct.domain.tmp filter_domains.awk
-          echo "📄 1m.domain: $(wc -l < 1m.domain) lines, $(du -h 1m.domain | cut -f1)"
+          awk -f process_direct.awk top-1m-after-gfw.domain
+          sort -u direct.domain.tmp -o direct.domain 2>/dev/null || touch direct.domain
+          sort -u 1m-other.list.tmp -o 1m-other.list 2>/dev/null || touch 1m-other.list
+          rm -f direct.domain.tmp 1m-other.list.tmp process_direct.awk
           echo "📄 direct.domain: $(wc -l < direct.domain) lines, $(du -h direct.domain | cut -f1)"
+          echo "📄 1m-other.list: $(wc -l < 1m-other.list) lines, $(du -h 1m-other.list | cut -f1)"
 
       - name: Generate GFW IP CIDR list
         shell: bash
@@ -167,38 +374,38 @@ jobs:
           EOF
           echo "📄 gfw.ipcidr: $(wc -l < gfw.ipcidr) lines, $(du -h gfw.ipcidr | cut -f1)"
 
-      - name: Commit and push to release branch
+      - name: Delete old release and create new one
         shell: bash
+        env:
+          GH_TOKEN: $ github.token 
         run: |
           set -euo pipefail
-          git config --global user.name "actions-user"
-          git config --global user.email "actions@github.com"
-
-          # 保存生成的文件到临时目录
-          mkdir -p /tmp/generated-files
-          cp 1m.domain direct.domain gfw.ipcidr /tmp/generated-files/
-
-          # 切换到 release 分支
-          if git ls-remote --exit-code --heads origin release >/dev/null 2>&1; then
-            git fetch origin release
-            git checkout -f release
-            git reset --hard origin/release
-          else
-            git checkout --orphan release
-            git rm -rf . 2>/dev/null || true
-          fi
-
-          # 复制生成的文件回来
-          cp /tmp/generated-files/* .
-
-          # 提交并推送
-          git add 1m.domain direct.domain gfw.ipcidr
           
-          if ! git diff --staged --quiet; then
-            git commit -m "Update: $(wc -l < 1m.domain) domains, $(wc -l < direct.domain) direct rules, $(wc -l < gfw.ipcidr) IP ranges"
-            git push -f origin release
-            echo "✅ 已推送到 release 分支"
-            echo "📄 1m.domain: $(wc -l < 1m.domain) lines, $(du -h 1m.domain | cut -f1)"
-            echo "📄 direct.domain: $(wc -l < direct.domain) lines, $(du -h direct.domain | cut -f1)"
-            echo "📄 gfw.ipcidr: $(wc -l < gfw.ipcidr) lines, $(du -h gfw.ipcidr | cut -f1)"
+          # 删除旧的 release（如果存在）
+          if gh release view latest 2>/dev/null; then
+            echo "🗑️  删除旧 release..."
+            gh release delete latest --yes --cleanup-tag 2>/dev/null || true
           fi
+          
+          # 创建新 release 并上传所有生成的文件
+          echo "📦 创建新 release..."
+          RELEASE_MSG="自动更新 - $(date -u +'%Y-%m-%d %H:%M:%S UTC')
+
+          📊 统计信息:
+          - reject.domain: $(wc -l < reject.domain) 条规则
+          - proxy.domain: $(wc -l < proxy.domain) 条规则
+          - direct.domain: $(wc -l < direct.domain) 条规则
+          - 1m-other.list: $(wc -l < 1m-other.list) 条域名
+          - gfw.ipcidr: $(wc -l < gfw.ipcidr) 条 IP 规则"
+          
+          gh release create latest \
+            --title "Latest Release" \
+            --notes "$RELEASE_MSG" \
+            reject.domain proxy.domain direct.domain 1m-other.list gfw.ipcidr
+          
+          echo "✅ 已创建新 release 并上传文件"
+          echo "📄 reject.domain: $(wc -l < reject.domain) lines, $(du -h reject.domain | cut -f1)"
+          echo "📄 proxy.domain: $(wc -l < proxy.domain) lines, $(du -h proxy.domain | cut -f1)"
+          echo "📄 direct.domain: $(wc -l < direct.domain) lines, $(du -h direct.domain | cut -f1)"
+          echo "📄 1m-other.list: $(wc -l < 1m-other.list) lines, $(du -h 1m-other.list | cut -f1)"
+          echo "📄 gfw.ipcidr: $(wc -l < gfw.ipcidr) lines, $(du -h gfw.ipcidr | cut -f1)"
