@@ -18,7 +18,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: release
-          fetch-depth: 0
+          fetch-depth: 1
 
       # 清空旧产物（保留 .github）
       - name: Purge previous files keep .github
@@ -249,21 +249,19 @@ jobs:
 
       - name: Cleanup temporary files
         run: |
-          rm -f top-1m.csv.zip top-1m.csv \
+          rm -f top-1m.csv.zip top-1m.csv top-1m.domain \
                 reject-list.txt gfw-list.txt direct-list.txt \
-                remaining-*.domain remaining-*.tmp
+                remaining-*.domain remaining-*.tmp *.tmp
 
-      # 提交并推送到 release 分支
-      - name: Commit and push with detailed changes
+      # 强制推送到 release 分支（不保留历史记录）
+      - name: Commit and force push
         shell: bash
         run: |
           set -euo pipefail
-          rm -f *.tmp || true
 
           git config --global user.email "actions@github.com"
           git config --global user.name "GitHub Actions"
 
           git add .
-          NUMSTAT=$(git diff --cached --numstat | awk '{print $3 " +" $1 "/-" $2}')
-          git commit -m "Update domain and IP lists" -m "$NUMSTAT" || echo "No changes to commit"
-          git push origin release
+          git commit -m "Update domain and IP lists" || echo "No changes to commit"
+          git push --force origin release
