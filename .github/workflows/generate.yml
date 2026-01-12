@@ -29,7 +29,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          curl -fsSL https://tranco-list.eu/top-1m.csv.zip -o top-1m.csv.zip
+          curl -fsSL https://tranco-list.eu/top-1m-incl-subdomains.csv.zip -o top-1m.csv.zip
           unzip -oq top-1m.csv.zip
           cut -d',' -f2 top-1m.csv > top-1m.domain
           dos2unix -q top-1m.domain 2>/dev/null || true
