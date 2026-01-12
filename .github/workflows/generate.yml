@@ -3,7 +3,7 @@ name: Generate domain and IP list
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 3 * * 1"  # 每周一凌晨3点
+    - cron: "0 3 * * 1"
 
 permissions:
   contents: write
@@ -15,357 +15,207 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: Install dependencies
-        shell: bash
         run: |
-          set -euo pipefail
           sudo apt-get update -qq
           sudo apt-get install -y unzip curl dos2unix
 
       - name: Delete old release
-        shell: bash
-        env:
-          GITHUB_TOKEN: $ secrets.GITHUB_TOKEN 
-        run: |
-          set -euo pipefail
-          if gh release view latest 2>/dev/null; then
-            echo "🗑️  删除旧 release..."
-            gh release delete latest --yes --cleanup-tag 2>/dev/null || true
-          else
-            echo "ℹ️  没有找到旧 release"
-          fi
+        run: gh release delete latest --yes --cleanup-tag 2>/dev/null || true
 
-      - name: Download and process Tranco top-1m list
-        shell: bash
+      - name: Download and process source files
         run: |
-          set -euo pipefail
+          # 下载 Tranco 1m 列表
           curl -fsSL https://tranco-list.eu/top-1m-incl-subdomains.csv.zip -o top-1m.csv.zip
-          unzip -oq top-1m.csv.zip
-          cut -d',' -f2 top-1m.csv > top-1m.domain
-          dos2unix -q top-1m.domain 2>/dev/null || true
-          echo "📄 top-1m.domain (原始): $(wc -l < top-1m.domain) lines, $(du -h top-1m.domain | cut -f1)"
+          unzip -qo top-1m.csv.zip
+          cut -d',' -f2 top-1m.csv | dos2unix 2>/dev/null > top-1m.domain
+          echo "📄 top-1m.domain: $(wc -l < top-1m.domain) 行"
 
-      - name: Deduplicate top-1m domains by suffix matching
-        shell: bash
+          # 定义标准化函数
+          normalize_rules() {
+            sed -e '/^regexp:/d' \
+                -e 's/^full://g' \
+                -e 's/^[[:space:]]\+//;s/[[:space:]]\+$//' \
+                -e 's/#.*$//' \
+                -e '/^$/d' "$1" | sort -u
+          }
+
+          # 下载并标准化规则文件
+          curl -fsSL https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/reject-list.txt -o reject-list.txt
+          normalize_rules reject-list.txt > reject-list.txt.tmp && mv reject-list.txt.tmp reject-list.txt
+          echo "📄 reject-list.txt: $(wc -l < reject-list.txt) 行"
+
+          curl -fsSL https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/gfw.txt -o gfw-list.txt
+          normalize_rules gfw-list.txt > gfw-list.txt.tmp && mv gfw-list.txt.tmp gfw-list.txt
+          echo "📄 gfw-list.txt: $(wc -l < gfw-list.txt) 行"
+
+          curl -fsSL https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/direct-list.txt -o direct-list.txt
+          normalize_rules direct-list.txt > direct-list.txt.tmp && mv direct-list.txt.tmp direct-list.txt
+          echo "📄 direct-list.txt: $(wc -l < direct-list.txt) 行"
+
+      - name: Deduplicate 1m domains by suffix
         run: |
-          set -euo pipefail
-          cat > deduplicate.awk <<'AWK'
-          BEGIN {
-            while ((getline line < "top-1m.domain") > 0) {
-              if (line != "") {
-                gsub(/^[[:space:]]+|[[:space:]]+$/, "", line)
-                if (line != "") domains[line] = 1
-              }
+          awk 'BEGIN {
+            while ((getline < "top-1m.domain") > 0) {
+              gsub(/^[[:space:]]+|[[:space:]]+$/, "")
+              if ($0 != "") domains[$0] = 1
             }
-            close("top-1m.domain")
-            
             for (domain in domains) {
               keep = 1
               temp = domain
               while (match(temp, /\./)) {
                 temp = substr(temp, RSTART + 1)
-                if (temp in domains) {
-                  keep = 0
-                  break
-                }
+                if (temp in domains) { keep = 0; break }
               }
               if (keep) print domain
             }
-          }
-          AWK
-          
-          awk -f deduplicate.awk > top-1m.domain.dedup
-          sort -u top-1m.domain.dedup -o top-1m.domain
-          rm -f top-1m.domain.dedup deduplicate.awk
-          echo "📄 top-1m.domain (去重后): $(wc -l < top-1m.domain) lines, $(du -h top-1m.domain | cut -f1)"
+          }' | sort -u > top-1m.domain.tmp
+          mv top-1m.domain.tmp top-1m.domain
+          echo "📄 top-1m.domain (去重): $(wc -l < top-1m.domain) 行"
 
-      - name: Download and normalize reject-list
-        shell: bash
+      - name: Process reject domains (Step 1)
         run: |
-          set -euo pipefail
-          curl -fsSL https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/reject-list.txt -o reject-list.txt
-          sed -i \
-            -e '/^regexp:/d' \
-            -e 's/^full://g' \
-            -e 's/^[[:space:]]\+//;s/[[:space:]]\+$//' \
-            -e 's/#.*$//' \
-            -e '/^$/d' \
-            reject-list.txt
-          sort -u reject-list.txt -o reject-list.txt
-          echo "📄 reject-list.txt: $(wc -l < reject-list.txt) lines, $(du -h reject-list.txt | cut -f1)"
-
-      - name: Download and normalize gfw-list
-        shell: bash
-        run: |
-          set -euo pipefail
-          curl -fsSL https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/gfw.txt -o gfw-list.txt
-          sed -i \
-            -e '/^regexp:/d' \
-            -e 's/^full://g' \
-            -e 's/^[[:space:]]\+//;s/[[:space:]]\+$//' \
-            -e 's/#.*$//' \
-            -e '/^$/d' \
-            gfw-list.txt
-          sort -u gfw-list.txt -o gfw-list.txt
-          echo "📄 gfw-list.txt: $(wc -l < gfw-list.txt) lines, $(du -h gfw-list.txt | cut -f1)"
-
-      - name: Download and normalize direct-list
-        shell: bash
-        run: |
-          set -euo pipefail
-          curl -fsSL https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/direct-list.txt -o direct-list.txt
-          sed -i \
-            -e '/^regexp:/d' \
-            -e 's/^full://g' \
-            -e 's/^[[:space:]]\+//;s/[[:space:]]\+$//' \
-            -e 's/#.*$//' \
-            -e '/^$/d' \
-            direct-list.txt
-          sort -u direct-list.txt -o direct-list.txt
-          echo "📄 direct-list.txt: $(wc -l < direct-list.txt) lines, $(du -h direct-list.txt | cut -f1)"
-
-      - name: Process reject domains with 1m pipeline
-        shell: bash
-        run: |
-          set -euo pipefail
-          cat > process_reject.awk <<'AWK'
-          BEGIN {
-            while ((getline line < "reject-list.txt") > 0) {
-              if (line != "") {
-                gsub(/^[[:space:]]+|[[:space:]]+$/, "", line)
-                if (line != "") suffixes[line] = 1
-              }
+          awk 'BEGIN {
+            while ((getline < "reject-list.txt") > 0) {
+              gsub(/^[[:space:]]+|[[:space:]]+$/, "")
+              if ($0 != "") rules[$0] = 1
             }
-            close("reject-list.txt")
           }
           {
-            domain = $0
-            gsub(/^[[:space:]]+|[[:space:]]+$/, "", domain)
-            if (domain == "") next
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "")
+            if ($0 == "") next
             
-            keep = 1
-            matched_suffix = ""
-            
-            if (domain in suffixes) {
-              keep = 0
-              matched_suffix = domain
-            } else {
-              temp = domain
+            matched = 0
+            if ($0 in rules) { matched_rules[$0] = 1; matched = 1 }
+            else {
+              temp = $0
               while (match(temp, /\./)) {
                 temp = substr(temp, RSTART + 1)
-                if (temp in suffixes) {
-                  keep = 0
-                  matched_suffix = temp
-                  break
-                }
+                if (temp in rules) { matched_rules[temp] = 1; matched = 1; break }
               }
             }
-            
-            if (!keep && matched_suffix != "") {
-              matched_rules[matched_suffix] = 1
-            } else if (keep) {
-              print domain > "top-1m-after-reject.tmp"
-            }
+            if (!matched) print > "remaining-1.tmp"
           }
           END {
-            for (rule in matched_rules) {
-              print rule > "reject.domain.tmp"
-            }
+            for (r in matched_rules) print r > "reject.domain"
           }
-          AWK
+          ' top-1m.domain
           
-          awk -f process_reject.awk top-1m.domain
-          sort -u reject.domain.tmp -o reject.domain 2>/dev/null || touch reject.domain
-          sort -u top-1m-after-reject.tmp -o top-1m-after-reject.domain 2>/dev/null || cp top-1m.domain top-1m-after-reject.domain
-          rm -f reject.domain.tmp top-1m-after-reject.tmp process_reject.awk
-          echo "📄 reject.domain: $(wc -l < reject.domain) lines, $(du -h reject.domain | cut -f1)"
+          sort -u reject.domain -o reject.domain 2>/dev/null || touch reject.domain
+          sort -u remaining-1.tmp -o remaining-1.domain 2>/dev/null || cp top-1m.domain remaining-1.domain
+          echo "📄 reject.domain: $(wc -l < reject.domain) 行"
 
-      - name: Process gfw/proxy domains with 1m pipeline and deduplicate with reject
-        shell: bash
+      - name: Process gfw/proxy domains (Step 2)
         run: |
-          set -euo pipefail
-          cat > process_gfw.awk <<'AWK'
-          BEGIN {
-            # 加载 reject 规则用于去重
-            while ((getline line < "reject.domain") > 0) {
-              if (line != "") {
-                gsub(/^[[:space:]]+|[[:space:]]+$/, "", line)
-                if (line != "") reject_rules[line] = 1
-              }
+          awk 'BEGIN {
+            while ((getline < "reject.domain") > 0) {
+              gsub(/^[[:space:]]+|[[:space:]]+$/, "")
+              if ($0 != "") exclusions[$0] = 1
             }
-            close("reject.domain")
-            
-            # 加载 gfw 规则
-            while ((getline line < "gfw-list.txt") > 0) {
-              if (line != "") {
-                gsub(/^[[:space:]]+|[[:space:]]+$/, "", line)
-                if (line != "") suffixes[line] = 1
-              }
+            while ((getline < "gfw-list.txt") > 0) {
+              gsub(/^[[:space:]]+|[[:space:]]+$/, "")
+              if ($0 != "") rules[$0] = 1
             }
-            close("gfw-list.txt")
           }
           {
-            domain = $0
-            gsub(/^[[:space:]]+|[[:space:]]+$/, "", domain)
-            if (domain == "") next
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "")
+            if ($0 == "") next
             
-            keep = 1
-            matched_suffix = ""
-            
-            if (domain in suffixes) {
-              keep = 0
-              matched_suffix = domain
-            } else {
-              temp = domain
+            matched = 0
+            matched_rule = ""
+            if ($0 in rules) { matched = 1; matched_rule = $0 }
+            else {
+              temp = $0
               while (match(temp, /\./)) {
                 temp = substr(temp, RSTART + 1)
-                if (temp in suffixes) {
-                  keep = 0
-                  matched_suffix = temp
-                  break
-                }
+                if (temp in rules) { matched = 1; matched_rule = temp; break }
               }
             }
             
-            if (!keep && matched_suffix != "") {
-              # 检查是否已在 reject 中
-              is_in_reject = 0
-              if (matched_suffix in reject_rules) {
-                is_in_reject = 1
-              } else {
-                temp = matched_suffix
+            if (matched && matched_rule != "") {
+              is_excluded = 0
+              if (matched_rule in exclusions) is_excluded = 1
+              else {
+                temp = matched_rule
                 while (match(temp, /\./)) {
                   temp = substr(temp, RSTART + 1)
-                  if (temp in reject_rules) {
-                    is_in_reject = 1
-                    break
-                  }
+                  if (temp in exclusions) { is_excluded = 1; break }
                 }
               }
-              
-              if (!is_in_reject) {
-                matched_rules[matched_suffix] = 1
-              }
-            } else if (keep) {
-              print domain > "top-1m-after-gfw.tmp"
+              if (!is_excluded) matched_rules[matched_rule] = 1
+            } else {
+              print > "remaining-2.tmp"
             }
           }
           END {
-            for (rule in matched_rules) {
-              print rule > "proxy.domain.tmp"
-            }
+            for (r in matched_rules) print r > "proxy.domain"
           }
-          AWK
+          ' remaining-1.domain
           
-          awk -f process_gfw.awk top-1m-after-reject.domain
-          sort -u proxy.domain.tmp -o proxy.domain 2>/dev/null || touch proxy.domain
-          sort -u top-1m-after-gfw.tmp -o top-1m-after-gfw.domain 2>/dev/null || cp top-1m-after-reject.domain top-1m-after-gfw.domain
-          rm -f proxy.domain.tmp top-1m-after-gfw.tmp process_gfw.awk
-          echo "📄 proxy.domain: $(wc -l < proxy.domain) lines, $(du -h proxy.domain | cut -f1)"
+          sort -u proxy.domain -o proxy.domain 2>/dev/null || touch proxy.domain
+          sort -u remaining-2.tmp -o remaining-2.domain 2>/dev/null || cp remaining-1.domain remaining-2.domain
+          echo "📄 proxy.domain: $(wc -l < proxy.domain) 行"
 
-      - name: Process direct domains with 1m pipeline and deduplicate with reject+gfw
-        shell: bash
+      - name: Process direct domains (Step 3)
         run: |
-          set -euo pipefail
-          cat > process_direct.awk <<'AWK'
-          BEGIN {
-            # 加载 reject 规则用于去重
-            while ((getline line < "reject.domain") > 0) {
-              if (line != "") {
-                gsub(/^[[:space:]]+|[[:space:]]+$/, "", line)
-                if (line != "") existing_rules[line] = 1
-              }
+          awk 'BEGIN {
+            while ((getline < "reject.domain") > 0) {
+              gsub(/^[[:space:]]+|[[:space:]]+$/, "")
+              if ($0 != "") exclusions[$0] = 1
             }
-            close("reject.domain")
-            
-            # 加载 proxy 规则用于去重
-            while ((getline line < "proxy.domain") > 0) {
-              if (line != "") {
-                gsub(/^[[:space:]]+|[[:space:]]+$/, "", line)
-                if (line != "") existing_rules[line] = 1
-              }
+            while ((getline < "proxy.domain") > 0) {
+              gsub(/^[[:space:]]+|[[:space:]]+$/, "")
+              if ($0 != "") exclusions[$0] = 1
             }
-            close("proxy.domain")
-            
-            # 加载 direct 规则
-            while ((getline line < "direct-list.txt") > 0) {
-              if (line != "") {
-                gsub(/^[[:space:]]+|[[:space:]]+$/, "", line)
-                if (line != "") suffixes[line] = 1
-              }
+            while ((getline < "direct-list.txt") > 0) {
+              gsub(/^[[:space:]]+|[[:space:]]+$/, "")
+              if ($0 != "") rules[$0] = 1
             }
-            close("direct-list.txt")
           }
           {
-            domain = $0
-            gsub(/^[[:space:]]+|[[:space:]]+$/, "", domain)
-            if (domain == "") next
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "")
+            if ($0 == "") next
             
-            keep = 1
-            matched_suffix = ""
-            
-            if (domain in suffixes) {
-              keep = 0
-              matched_suffix = domain
-            } else {
-              temp = domain
+            matched = 0
+            matched_rule = ""
+            if ($0 in rules) { matched = 1; matched_rule = $0 }
+            else {
+              temp = $0
               while (match(temp, /\./)) {
                 temp = substr(temp, RSTART + 1)
-                if (temp in suffixes) {
-                  keep = 0
-                  matched_suffix = temp
-                  break
-                }
+                if (temp in rules) { matched = 1; matched_rule = temp; break }
               }
             }
             
-            if (!keep && matched_suffix != "") {
-              # 检查是否已在 reject 或 proxy 中
-              is_in_existing = 0
-              if (matched_suffix in existing_rules) {
-                is_in_existing = 1
-              } else {
-                temp = matched_suffix
+            if (matched && matched_rule != "") {
+              is_excluded = 0
+              if (matched_rule in exclusions) is_excluded = 1
+              else {
+                temp = matched_rule
                 while (match(temp, /\./)) {
                   temp = substr(temp, RSTART + 1)
-                  if (temp in existing_rules) {
-                    is_in_existing = 1
-                    break
-                  }
+                  if (temp in exclusions) { is_excluded = 1; break }
                 }
               }
-              
-              if (!is_in_existing) {
-                matched_rules[matched_suffix] = 1
-              }
-            } else if (keep) {
-              print domain > "1m-other.list.tmp"
+              if (!is_excluded) matched_rules[matched_rule] = 1
+            } else {
+              print > "1m-other.list"
             }
           }
           END {
-            for (rule in matched_rules) {
-              print rule > "direct.domain.tmp"
-            }
+            for (r in matched_rules) print r > "direct.domain"
           }
-          AWK
+          ' remaining-2.domain
           
-          awk -f process_direct.awk top-1m-after-gfw.domain
-          sort -u direct.domain.tmp -o direct.domain 2>/dev/null || touch direct.domain
-          sort -u 1m-other.list.tmp -o 1m-other.list 2>/dev/null || touch 1m-other.list
-          rm -f direct.domain.tmp 1m-other.list.tmp process_direct.awk
-          echo "📄 direct.domain: $(wc -l < direct.domain) lines, $(du -h direct.domain | cut -f1)"
-          echo "📄 1m-other.list: $(wc -l < 1m-other.list) lines, $(du -h 1m-other.list | cut -f1)"
+          sort -u direct.domain -o direct.domain 2>/dev/null || touch direct.domain
+          sort -u 1m-other.list -o 1m-other.list 2>/dev/null || touch 1m-other.list
+          echo "📄 direct.domain: $(wc -l < direct.domain) 行"
+          echo "📄 1m-other.list: $(wc -l < 1m-other.list) 行"
 
       - name: Generate GFW IP CIDR list
-        shell: bash
         run: |
-          set -euo pipefail
-          curl -fsSL https://raw.githubusercontent.com/pmkol/easymosdns/rules/gfw_ip_list.txt -o gfw_ipcidr.txt
-          echo "📄 gfw_ipcidr.txt: $(wc -l < gfw_ipcidr.txt) lines, $(du -h gfw_ipcidr.txt | cut -f1)"
-          cp gfw_ipcidr.txt gfw.ipcidr
+          curl -fsSL https://raw.githubusercontent.com/pmkol/easymosdns/rules/gfw_ip_list.txt -o gfw.ipcidr
           cat >> gfw.ipcidr <<'EOF'
           0.0.0.0/8
           10.0.0.0/8
@@ -383,33 +233,29 @@ jobs:
           224.0.0.0/4
           240.0.0.0/4
           EOF
-          echo "📄 gfw.ipcidr: $(wc -l < gfw.ipcidr) lines, $(du -h gfw.ipcidr | cut -f1)"
+          echo "📄 gfw.ipcidr: $(wc -l < gfw.ipcidr) 行"
 
-      - name: Create new release and upload files
-        shell: bash
-        env:
-          GITHUB_TOKEN: $ secrets.GITHUB_TOKEN 
+      - name: Cleanup temporary files
         run: |
-          set -euo pipefail
-          
-          echo "📦 创建新 release 并上传文件..."
-          RELEASE_MSG="自动更新 - $(date -u +'%Y-%m-%d %H:%M:%S UTC')
+          rm -f top-1m.csv.zip top-1m.csv \
+                reject-list.txt gfw-list.txt direct-list.txt \
+                remaining-*.domain remaining-*.tmp
 
-          📊 统计信息:
-          - reject.domain: $(wc -l < reject.domain) 条规则
-          - proxy.domain: $(wc -l < proxy.domain) 条规则
-          - direct.domain: $(wc -l < direct.domain) 条规则
-          - 1m-other.list: $(wc -l < 1m-other.list) 条域名
-          - gfw.ipcidr: $(wc -l < gfw.ipcidr) 条 IP 规则"
+      - name: Create release and upload files
+        run: |
+          # 自动生成统计信息
+          STATS="## 📊 统计信息\n\n| 文件 | 规则数 |\n|------|--------|\n"
+          for file in reject.domain proxy.domain direct.domain 1m-other.list gfw.ipcidr; do
+            if [ -f "$file" ]; then
+              count=$(wc -l < "$file")
+              STATS="${STATS}| $file | $count |\n"
+            fi
+          done
           
+          # 创建 release 并自动上传所有生成的文件
           gh release create latest \
             --title "Latest Release" \
-            --notes "$RELEASE_MSG" \
-            reject.domain proxy.domain direct.domain 1m-other.list gfw.ipcidr
+            --notes "$(echo -e "$STATS")" \
+            *.domain *.list *.ipcidr
           
-          echo "✅ 已创建新 release 并上传所有文件"
-          echo "📄 reject.domain: $(wc -l < reject.domain) lines, $(du -h reject.domain | cut -f1)"
-          echo "📄 proxy.domain: $(wc -l < proxy.domain) lines, $(du -h proxy.domain | cut -f1)"
-          echo "📄 direct.domain: $(wc -l < direct.domain) lines, $(du -h direct.domain | cut -f1)"
-          echo "📄 1m-other.list: $(wc -l < 1m-other.list) lines, $(du -h 1m-other.list | cut -f1)"
-          echo "📄 gfw.ipcidr: $(wc -l < gfw.ipcidr) lines, $(du -h gfw.ipcidr | cut -f1)"
+          echo "✅ Release 创建成功"
