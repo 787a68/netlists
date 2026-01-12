@@ -25,6 +25,19 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y unzip curl dos2unix
 
+      - name: Delete old release
+        shell: bash
+        env:
+          GITHUB_TOKEN: $ secrets.GITHUB_TOKEN 
+        run: |
+          set -euo pipefail
+          if gh release view latest 2>/dev/null; then
+            echo "🗑️  删除旧 release..."
+            gh release delete latest --yes --cleanup-tag 2>/dev/null || true
+          else
+            echo "ℹ️  没有找到旧 release"
+          fi
+
       - name: Download and process Tranco top-1m list
         shell: bash
         run: |
@@ -169,7 +182,6 @@ jobs:
           sort -u top-1m-after-reject.tmp -o top-1m-after-reject.domain 2>/dev/null || cp top-1m.domain top-1m-after-reject.domain
           rm -f reject.domain.tmp top-1m-after-reject.tmp process_reject.awk
           echo "📄 reject.domain: $(wc -l < reject.domain) lines, $(du -h reject.domain | cut -f1)"
-          echo "📄 top-1m-after-reject.domain: $(wc -l < top-1m-after-reject.domain) lines"
 
       - name: Process gfw/proxy domains with 1m pipeline and deduplicate with reject
         shell: bash
@@ -253,7 +265,6 @@ jobs:
           sort -u top-1m-after-gfw.tmp -o top-1m-after-gfw.domain 2>/dev/null || cp top-1m-after-reject.domain top-1m-after-gfw.domain
           rm -f proxy.domain.tmp top-1m-after-gfw.tmp process_gfw.awk
           echo "📄 proxy.domain: $(wc -l < proxy.domain) lines, $(du -h proxy.domain | cut -f1)"
-          echo "📄 top-1m-after-gfw.domain: $(wc -l < top-1m-after-gfw.domain) lines"
 
       - name: Process direct domains with 1m pipeline and deduplicate with reject+gfw
         shell: bash
@@ -374,21 +385,14 @@ jobs:
           EOF
           echo "📄 gfw.ipcidr: $(wc -l < gfw.ipcidr) lines, $(du -h gfw.ipcidr | cut -f1)"
 
-      - name: Delete old release and create new one
+      - name: Create new release and upload files
         shell: bash
         env:
-          GH_TOKEN: $ github.token 
+          GITHUB_TOKEN: $ secrets.GITHUB_TOKEN 
         run: |
           set -euo pipefail
           
-          # 删除旧的 release（如果存在）
-          if gh release view latest 2>/dev/null; then
-            echo "🗑️  删除旧 release..."
-            gh release delete latest --yes --cleanup-tag 2>/dev/null || true
-          fi
-          
-          # 创建新 release 并上传所有生成的文件
-          echo "📦 创建新 release..."
+          echo "📦 创建新 release 并上传文件..."
           RELEASE_MSG="自动更新 - $(date -u +'%Y-%m-%d %H:%M:%S UTC')
 
           📊 统计信息:
@@ -403,7 +407,7 @@ jobs:
             --notes "$RELEASE_MSG" \
             reject.domain proxy.domain direct.domain 1m-other.list gfw.ipcidr
           
-          echo "✅ 已创建新 release 并上传文件"
+          echo "✅ 已创建新 release 并上传所有文件"
           echo "📄 reject.domain: $(wc -l < reject.domain) lines, $(du -h reject.domain | cut -f1)"
           echo "📄 proxy.domain: $(wc -l < proxy.domain) lines, $(du -h proxy.domain | cut -f1)"
           echo "📄 direct.domain: $(wc -l < direct.domain) lines, $(du -h direct.domain | cut -f1)"
