@@ -33,7 +33,41 @@ jobs:
           unzip -oq top-1m.csv.zip
           cut -d',' -f2 top-1m.csv > top-1m.domain
           dos2unix -q top-1m.domain 2>/dev/null || true
-          echo "📄 top-1m.domain: $(wc -l < top-1m.domain) lines, $(du -h top-1m.domain | cut -f1)"
+          echo "📄 top-1m.domain (原始): $(wc -l < top-1m.domain) lines, $(du -h top-1m.domain | cut -f1)"
+
+      - name: Deduplicate top-1m domains by suffix matching
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > deduplicate.awk <<'AWK'
+          BEGIN {
+            while ((getline line < "top-1m.domain") > 0) {
+              if (line != "") {
+                gsub(/^[[:space:]]+|[[:space:]]+$/, "", line)
+                if (line != "") domains[line] = 1
+              }
+            }
+            close("top-1m.domain")
+            
+            for (domain in domains) {
+              keep = 1
+              temp = domain
+              while (match(temp, /\./)) {
+                temp = substr(temp, RSTART + 1)
+                if (temp in domains) {
+                  keep = 0
+                  break
+                }
+              }
+              if (keep) print domain
+            }
+          }
+          AWK
+          
+          awk -f deduplicate.awk > top-1m.domain.dedup
+          sort -u top-1m.domain.dedup -o top-1m.domain
+          rm -f top-1m.domain.dedup deduplicate.awk
+          echo "📄 top-1m.domain (去重后): $(wc -l < top-1m.domain) lines, $(du -h top-1m.domain | cut -f1)"
 
       - name: Download and normalize direct-list
         shell: bash
@@ -68,10 +102,10 @@ jobs:
             domain = $0
             gsub(/^[[:space:]]+|[[:space:]]+$/, "", domain)
             if (domain == "") next
-
+            
             keep = 1
             matched_suffix = ""
-
+            
             if (domain in suffixes) {
               keep = 0
               matched_suffix = domain
@@ -86,7 +120,7 @@ jobs:
                 }
               }
             }
-
+            
             if (keep) {
               print domain > "1m.domain.tmp"
             } else if (matched_suffix != "") {
@@ -99,7 +133,7 @@ jobs:
             }
           }
           AWK
-
+          
           awk -f filter_domains.awk top-1m.domain
           sort -u 1m.domain.tmp -o 1m.domain
           sort -u direct.domain.tmp -o direct.domain
@@ -140,19 +174,26 @@ jobs:
           git config --global user.name "actions-user"
           git config --global user.email "actions@github.com"
 
+          # 保存生成的文件到临时目录
+          mkdir -p /tmp/generated-files
+          cp 1m.domain direct.domain gfw.ipcidr /tmp/generated-files/
+
           # 切换到 release 分支
           if git ls-remote --exit-code --heads origin release >/dev/null 2>&1; then
             git fetch origin release
-            git checkout release
+            git checkout -f release
             git reset --hard origin/release
           else
             git checkout --orphan release
             git rm -rf . 2>/dev/null || true
           fi
 
+          # 复制生成的文件回来
+          cp /tmp/generated-files/* .
+
           # 提交并推送
           git add 1m.domain direct.domain gfw.ipcidr
-
+          
           if ! git diff --staged --quiet; then
             git commit -m "Update: $(wc -l < 1m.domain) domains, $(wc -l < direct.domain) direct rules, $(wc -l < gfw.ipcidr) IP ranges"
             git push -f origin release
