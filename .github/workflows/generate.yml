@@ -58,6 +58,15 @@ jobs:
           normalize_rules reject-list.txt > reject-list.txt.tmp && mv reject-list.txt.tmp reject-list.txt
           echo "📄 reject-list.txt: $(wc -l < reject-list.txt) 行"
 
+          # 下载 surge reject.domain 并合并到 reject-list
+          curl -fsSL https://raw.githubusercontent.com/787a68/surge/rule/reject.domain -o surge-reject.tmp
+          # 去除每行开头的点
+          sed 's/^\.//' surge-reject.tmp | normalize_rules - >> reject-list.txt.tmp2
+          cat reject-list.txt >> reject-list.txt.tmp2
+          sort -u reject-list.txt.tmp2 > reject-list.txt
+          rm -f surge-reject.tmp reject-list.txt.tmp2
+          echo "📄 reject-list.txt (合并 surge): $(wc -l < reject-list.txt) 行"
+
           curl -fsSL https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/gfw.txt -o gfw-list.txt
           normalize_rules gfw-list.txt > gfw-list.txt.tmp && mv gfw-list.txt.tmp gfw-list.txt
           echo "📄 gfw-list.txt: $(wc -l < gfw-list.txt) 行"
@@ -84,7 +93,7 @@ jobs:
             }
           }' | sort -u > top-1m.domain.tmp
           mv top-1m.domain.tmp top-1m.domain
-          echo "📄 top-1m.domain (去重): $(wc -l < top-1m.domain) 行"
+          echo "📄 top-1m.domain (后缀去重): $(wc -l < top-1m.domain) 行"
 
       - name: Process reject domains (Step 1)
         run: |
@@ -117,6 +126,7 @@ jobs:
           sort -u reject.domain -o reject.domain 2>/dev/null || touch reject.domain
           sort -u remaining-1.tmp -o remaining-1.domain 2>/dev/null || cp top-1m.domain remaining-1.domain
           echo "📄 reject.domain: $(wc -l < reject.domain) 行"
+          echo "📄 remaining-1.domain (第1次去重后): $(wc -l < remaining-1.domain) 行"
 
       - name: Process gfw/proxy domains (Step 2)
         run: |
@@ -168,6 +178,7 @@ jobs:
           sort -u proxy.domain -o proxy.domain 2>/dev/null || touch proxy.domain
           sort -u remaining-2.tmp -o remaining-2.domain 2>/dev/null || cp remaining-1.domain remaining-2.domain
           echo "📄 proxy.domain: $(wc -l < proxy.domain) 行"
+          echo "📄 remaining-2.domain (第2次去重后): $(wc -l < remaining-2.domain) 行"
 
       - name: Process direct domains (Step 3)
         run: |
@@ -223,7 +234,7 @@ jobs:
           sort -u direct.domain -o direct.domain 2>/dev/null || touch direct.domain
           sort -u 1m-other.list -o 1m-other.list 2>/dev/null || touch 1m-other.list
           echo "📄 direct.domain: $(wc -l < direct.domain) 行"
-          echo "📄 1m-other.list: $(wc -l < 1m-other.list) 行"
+          echo "📄 1m-other.list (第3次去重后): $(wc -l < 1m-other.list) 行"
 
       - name: Generate GFW IP CIDR list
         run: |
