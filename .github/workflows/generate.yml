@@ -22,6 +22,8 @@ jobs:
           sudo apt-get install -y unzip curl dos2unix
 
       - name: Delete old release
+        env:
+          GH_TOKEN: $ github.token 
         run: gh release delete latest --yes --cleanup-tag 2>/dev/null || true
 
       - name: Download and process source files
@@ -242,20 +244,10 @@ jobs:
                 remaining-*.domain remaining-*.tmp
 
       - name: Create release and upload files
+        env:
+          GH_TOKEN: $ github.token 
         run: |
-          # 自动生成统计信息
-          STATS="## 📊 统计信息\n\n| 文件 | 规则数 |\n|------|--------|\n"
-          for file in reject.domain proxy.domain direct.domain 1m-other.list gfw.ipcidr; do
-            if [ -f "$file" ]; then
-              count=$(wc -l < "$file")
-              STATS="${STATS}| $file | $count |\n"
-            fi
-          done
-          
-          # 创建 release 并自动上传所有生成的文件
           gh release create latest \
             --title "Latest Release" \
-            --notes "$(echo -e "$STATS")" \
+            --notes "" \
             *.domain *.list *.ipcidr
-          
-          echo "✅ Release 创建成功"
