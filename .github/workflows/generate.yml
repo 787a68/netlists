@@ -13,8 +13,23 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
+      # 检出 release 分支（如果不存在会自动创建）
+      - name: Checkout release branch
         uses: actions/checkout@v4
+        with:
+          ref: release
+          fetch-depth: 0
+
+      # 清空旧产物（保留 .github）
+      - name: Purge previous files keep .github
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rm -r --ignore-unmatch . ':(exclude).github' || true
+          find . -mindepth 1 -maxdepth 1 \
+            -not -name '.git' \
+            -not -name '.github' \
+            -exec rm -rf {} +
 
       - name: Install dependencies
         run: |
@@ -51,7 +66,164 @@ jobs:
           normalize_rules direct-list.txt > direct-list.txt.tmp && mv direct-list.txt.tmp direct-list.txt
           echo "📄 direct-list.txt: $(wc -l < direct-list.txt) 行"
 
-      # ... [其他处理步骤保持不变] ...
+      - name: Deduplicate 1m domains by suffix
+        run: |
+          awk 'BEGIN {
+            while ((getline < "top-1m.domain") > 0) {
+              gsub(/^[[:space:]]+|[[:space:]]+$/, "")
+              if ($0 != "") domains[$0] = 1
+            }
+            for (domain in domains) {
+              keep = 1
+              temp = domain
+              while (match(temp, /\./)) {
+                temp = substr(temp, RSTART + 1)
+                if (temp in domains) { keep = 0; break }
+              }
+              if (keep) print domain
+            }
+          }' | sort -u > top-1m.domain.tmp
+          mv top-1m.domain.tmp top-1m.domain
+          echo "📄 top-1m.domain (去重): $(wc -l < top-1m.domain) 行"
+
+      - name: Process reject domains (Step 1)
+        run: |
+          awk 'BEGIN {
+            while ((getline < "reject-list.txt") > 0) {
+              gsub(/^[[:space:]]+|[[:space:]]+$/, "")
+              if ($0 != "") rules[$0] = 1
+            }
+          }
+          {
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "")
+            if ($0 == "") next
+            
+            matched = 0
+            if ($0 in rules) { matched_rules[$0] = 1; matched = 1 }
+            else {
+              temp = $0
+              while (match(temp, /\./)) {
+                temp = substr(temp, RSTART + 1)
+                if (temp in rules) { matched_rules[temp] = 1; matched = 1; break }
+              }
+            }
+            if (!matched) print > "remaining-1.tmp"
+          }
+          END {
+            for (r in matched_rules) print r > "reject.domain"
+          }
+          ' top-1m.domain
+          
+          sort -u reject.domain -o reject.domain 2>/dev/null || touch reject.domain
+          sort -u remaining-1.tmp -o remaining-1.domain 2>/dev/null || cp top-1m.domain remaining-1.domain
+          echo "📄 reject.domain: $(wc -l < reject.domain) 行"
+
+      - name: Process gfw/proxy domains (Step 2)
+        run: |
+          awk 'BEGIN {
+            while ((getline < "reject.domain") > 0) {
+              gsub(/^[[:space:]]+|[[:space:]]+$/, "")
+              if ($0 != "") exclusions[$0] = 1
+            }
+            while ((getline < "gfw-list.txt") > 0) {
+              gsub(/^[[:space:]]+|[[:space:]]+$/, "")
+              if ($0 != "") rules[$0] = 1
+            }
+          }
+          {
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "")
+            if ($0 == "") next
+            
+            matched = 0
+            matched_rule = ""
+            if ($0 in rules) { matched = 1; matched_rule = $0 }
+            else {
+              temp = $0
+              while (match(temp, /\./)) {
+                temp = substr(temp, RSTART + 1)
+                if (temp in rules) { matched = 1; matched_rule = temp; break }
+              }
+            }
+            
+            if (matched && matched_rule != "") {
+              is_excluded = 0
+              if (matched_rule in exclusions) is_excluded = 1
+              else {
+                temp = matched_rule
+                while (match(temp, /\./)) {
+                  temp = substr(temp, RSTART + 1)
+                  if (temp in exclusions) { is_excluded = 1; break }
+                }
+              }
+              if (!is_excluded) matched_rules[matched_rule] = 1
+            } else {
+              print > "remaining-2.tmp"
+            }
+          }
+          END {
+            for (r in matched_rules) print r > "proxy.domain"
+          }
+          ' remaining-1.domain
+          
+          sort -u proxy.domain -o proxy.domain 2>/dev/null || touch proxy.domain
+          sort -u remaining-2.tmp -o remaining-2.domain 2>/dev/null || cp remaining-1.domain remaining-2.domain
+          echo "📄 proxy.domain: $(wc -l < proxy.domain) 行"
+
+      - name: Process direct domains (Step 3)
+        run: |
+          awk 'BEGIN {
+            while ((getline < "reject.domain") > 0) {
+              gsub(/^[[:space:]]+|[[:space:]]+$/, "")
+              if ($0 != "") exclusions[$0] = 1
+            }
+            while ((getline < "proxy.domain") > 0) {
+              gsub(/^[[:space:]]+|[[:space:]]+$/, "")
+              if ($0 != "") exclusions[$0] = 1
+            }
+            while ((getline < "direct-list.txt") > 0) {
+              gsub(/^[[:space:]]+|[[:space:]]+$/, "")
+              if ($0 != "") rules[$0] = 1
+            }
+          }
+          {
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "")
+            if ($0 == "") next
+            
+            matched = 0
+            matched_rule = ""
+            if ($0 in rules) { matched = 1; matched_rule = $0 }
+            else {
+              temp = $0
+              while (match(temp, /\./)) {
+                temp = substr(temp, RSTART + 1)
+                if (temp in rules) { matched = 1; matched_rule = temp; break }
+              }
+            }
+            
+            if (matched && matched_rule != "") {
+              is_excluded = 0
+              if (matched_rule in exclusions) is_excluded = 1
+              else {
+                temp = matched_rule
+                while (match(temp, /\./)) {
+                  temp = substr(temp, RSTART + 1)
+                  if (temp in exclusions) { is_excluded = 1; break }
+                }
+              }
+              if (!is_excluded) matched_rules[matched_rule] = 1
+            } else {
+              print > "1m-other.list"
+            }
+          }
+          END {
+            for (r in matched_rules) print r > "direct.domain"
+          }
+          ' remaining-2.domain
+          
+          sort -u direct.domain -o direct.domain 2>/dev/null || touch direct.domain
+          sort -u 1m-other.list -o 1m-other.list 2>/dev/null || touch 1m-other.list
+          echo "📄 direct.domain: $(wc -l < direct.domain) 行"
+          echo "📄 1m-other.list: $(wc -l < 1m-other.list) 行"
 
       - name: Generate GFW IP CIDR list
         run: |
@@ -81,13 +253,17 @@ jobs:
                 reject-list.txt gfw-list.txt direct-list.txt \
                 remaining-*.domain remaining-*.tmp
 
-      - name: Create or update release
-        env:
-          GITHUB_TOKEN: $ github.token 
+      # 提交并推送到 release 分支
+      - name: Commit and push with detailed changes
+        shell: bash
         run: |
-          # 如果 release 不存在则创建
-          gh release view latest >/dev/null 2>&1 || \
-            gh release create latest --title "Latest Release" --notes ""
-          
-          # 使用 --clobber 覆盖已存在的文件
-          gh release upload latest *.domain *.list *.ipcidr --clobber
+          set -euo pipefail
+          rm -f *.tmp || true
+
+          git config --global user.email "actions@github.com"
+          git config --global user.name "GitHub Actions"
+
+          git add .
+          NUMSTAT=$(git diff --cached --numstat | awk '{print $3 " +" $1 "/-" $2}')
+          git commit -m "Update domain and IP lists" -m "$NUMSTAT" || echo "No changes to commit"
+          git push origin release
